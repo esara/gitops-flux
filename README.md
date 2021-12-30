@@ -40,8 +40,8 @@ curl -s https://fluxcd.io/install.sh | sudo bash
 
 The Git repository contains the following top directories:
 
-- **apps** dir contains Helm releases with a custom configuration per cluster
-- **infrastructure** dir contains common infra tools such as NGINX ingress controller and Helm repository definitions
+- **apps** dir contains kubernetes application manifests, which are then customized per cluster.
+- **infrastructure** dir contains common infrastructure services such as datastores, ingress controllers, etc. and Helm repository definitions. In this case [Gloo Edge Enterprise](https://docs.solo.io/gloo-edge/latest/) 
 - **clusters** dir contains the Flux configuration per cluster
 
 ```
@@ -50,8 +50,8 @@ The Git repository contains the following top directories:
 │   ├── production 
 │   └── staging
 ├── infrastructure
-│   ├── nginx
-│   ├── redis
+│   ├── glooedge
+│   ├── keycloak
 │   └── sources
 └── clusters
     ├── production
@@ -65,16 +65,74 @@ The apps configuration is structured into:
 - **apps/staging/** dir contains the staging values
 
 ```
-./apps/
-├── base
-├── production
-│   ├── kustomization.yaml
-└── staging
-    ├── kustomization.yaml
+├── apps
+│   ├── base
+│   │   └── petclinic
+│   │       ├── kustomization.yaml
+│   │       ├── namespace.yaml
+│   │       ├── service-app.yaml
+│   │       ├── service-db.yaml
+│   │       ├── statefulset-app.yaml
+│   │       ├── statefulset-db.yaml
+│   │       └── virtualservice.yaml
+│  ├── production
+│  │   ├── kustomization.yaml
+│   └── staging
+│       ├── kustomization.yaml
+│       ├── petclinic
+│       │   ├── authconfig.yaml
+│       │   └── kustomization.yaml
+│       └── ratelimit.yaml
 ```
 
-Note that with ` version: ">=1.0.0"` we configure Flux to automatically upgrade
-the `HelmRelease` to the latest stable chart version (alpha, beta and pre-releases will be ignored).
+In **apps/base/petclinic/** dir we have a manifests with common values for both clusters:
+
+```yaml
+apiVersion: gateway.solo.io/v1
+kind: VirtualService
+metadata:
+  name: petclinic
+  namespace: gloo-system
+spec:
+  virtualHost:
+    domains:
+      - '*'
+    routes:
+      - matchers:
+         - prefix: /
+        routeAction:
+          single:
+            upstream:
+              name: default-petclinic-80
+              namespace: gloo-system
+```
+
+In **apps/staging/** dir we have a Kustomize patch with the staging specific values:
+
+```yaml
+apiVersion: enterprise.gloo.solo.io/v1
+kind: AuthConfig
+metadata:
+  name: oauth
+  namespace: gloo-system
+spec:
+  configs:
+  - oauth2:
+      oidcAuthorizationCode:
+        appUrl: https://192.168.64.51
+        callbackPath: /callback
+        clientId: 2504c599-fcab-4174-9164-a77d3fb5db14 
+        clientSecretRef:
+          name: oauth
+          namespace: gloo-system
+        issuerUrl: "http://192.168.64.50:8080/auth/realms/master/"
+        scopes:
+        - email
+        headers:
+          idTokenHeader: jwt
+```
+
+Note: For each environment or cluster you may change the OIDC configuration.
 
 Infrastructure:
 
@@ -91,9 +149,9 @@ Infrastructure:
 │   │   ├── namespace.yaml
 │   │   └── service.yaml
 │   ├── kustomization.yaml
- └── sources
-     ├── glooedge.yaml
-     └── kustomization.yaml
+│   └── sources
+│       ├── glooedge.yaml
+│       └── kustomization.yaml
 ```
 
 In **infrastructure/sources/** dir we have the Gloo Edge Enterprise Helm repositories definitions:
@@ -142,6 +200,7 @@ spec:
   path: ./apps/staging
   prune: true
   validation: client
+  timeout: 2m
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
 kind: Kustomization
@@ -259,6 +318,57 @@ Clone your personal forked repo locally and cd into the folder. We will now fina
 First finalise Keycloak (OIDC) configurtaion by running `./scripts/setup.sh`
 We'll use the `APP_URL`, `KEYCLOAK_URL` & `client` outputs to configure the AuthConfig later.
 
+```console
+./scripts/setup.sh
+Generating a 2048 bit RSA private key
+...............+++
+..........+++
+writing new private key to 'tls.key'
+-----
+secret/upstream-tls created
+TLS certificate secret created
+### Petclinic URL for AuthConfig ###
+APP_URL: https://192.168.64.51
+### Keycloak endpoint for AuthConfig ###
+KEYCLOAK_URL: http://192.168.64.50:8080/auth
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100  1803  100  1734  100    69   3000    119 --:--:-- --:--:-- --:--:--  3119
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   571  100   542  100    29   4839    258 --:--:-- --:--:-- --:--:--  5053
+### Keycloak Client ID for AuthConfig ###
+client: 5b6b138b-1e1d-44ea-82e2-081f1d4de695
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100  1371  100  1317  100    54  23105    947 --:--:-- --:--:-- --:--:-- 24052
+Keycloak users created
++--------+-------+
+| SECRET | TYPE  |
++--------+-------+
+| oauth  | OAuth |
++--------+-------+
+Keycloak configuration complete
+```
+## Add API Gateway security features to the application
+At this stage you should be able to open the Petclinic application in your browser, http://192.168.64.51 in this case.
+![HTTP App](./images/http-petclinic.png)
+
+- **Add TLS Encryption**
+The setup script created the required certificate and kubernetes secret.
+We edit `apps/base/petclinic/virtualservice.yaml` and remove the comments for the SSL Config section
+```console
+spec:
+# ---------------- SSL config ---------------------------
+  sslConfig:
+    secretRef:
+      name: upstream-tls
+      namespace: gloo-system
+# -------------------------------------------------------
+  virtualHost:
+```
+Note: Leave the rest of the file as is. We'll be returning to this file a couple of times to remove the comments when need be.
+
 Now all we need to do is commit the change to Github and wait for Fluxcd to reconsile the change.
 
 ```sh
@@ -313,96 +423,139 @@ spec:
 ```
 And then update `apps/staging/petclinic/kustomization.yaml` by removing the comment in front of authconfig.yaml
 
-Create a dir inside `clusters` with your cluster name:
-
-```sh
-mkdir -p clusters/dev
+```console
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base/petclinic
+  - authconfig.yaml
 ```
 Lastly we update the application virtual service to use the OIDC service. Remove the ## commments from `apps/base/petclinic/virtualservice.yaml`
 
-Copy the sync manifests from staging:
-
-```sh
-cp clusters/staging/infrastructure.yaml clusters/dev
+```console
+    routes:
+      - matchers:
+         - prefix: /
+# ------------------- OIDC - Only applied to this matcher -------------------
+        options:
+          extauth:
+            configRef:
+              name: oauth
+              namespace: gloo-system
+# ---------------------------------------------------------------------------
+# ---------------- Rate limit config ------------------
 ```
 
-You could create a dev overlay inside `apps`, make sure
-to change the `spec.path` inside `clusters/dev/apps.yaml` to `path: ./apps/dev`. 
+```console
+❯ git status
+On branch main
+Your branch is up to date with 'origin/main'.
 
-Push the changes to the main branch:
-
-```sh
-git add -A && git commit -m "add dev cluster" && git push
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   apps/base/petclinic/virtualservice.yaml
+	modified:   apps/staging/petclinic/authconfig.yaml
+	modified:   apps/staging/petclinic/kustomization.yaml
 ```
-
-Set the kubectl context and path to your dev cluster and bootstrap Flux:
-
 ```sh
-flux bootstrap github \
-    --context=dev \
-    --owner=${GITHUB_USER} \
-    --repository=${GITHUB_REPO} \
-    --branch=main \
-    --personal \
-    --path=clusters/dev
+git add -A && git commit -m "staging update" && git push
 ```
+Once reconciled the application now has authentication.
+![OIDC](./images/Login.png)
 
-## Identical environments
+Login using Username: user1 and Password: password
 
-If you want to spin up an identical environment, you can bootstrap a cluster
-e.g. `production-clone` and reuse the `production` definitions.
-
-Bootstrap the `production-clone` cluster:
-
-```sh
-flux bootstrap github \
-    --context=production-clone \
-    --owner=${GITHUB_USER} \
-    --repository=${GITHUB_REPO} \
-    --branch=main \
-    --personal \
-    --path=clusters/production-clone
-```
-
-Pull the changes locally:
-
-```sh
-git pull origin main
-```
-
-Create a `kustomization.yaml` inside the `clusters/production-clone` dir:
+- **Add Rate Limiting**
+The rate limiting configuration in this example is global, so we'll apply it at the staging cluster level via apps/staging/ratelimit.yaml and `apps/staging/kustomization.yaml`. Enable the rate limiting configuration via apps/staging/kustomization.yaml
 
 ```yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - flux-system
-  - ../production/infrastructure.yaml
+- petclinic
+- ratelimit.yaml
 ```
 
-Note that besides the `flux-system` kustomize overlay, we also include
-the `infrastructure` and `apps` manifests from the production dir.
-
-Push the changes to the main branch:
-
+We also edit the virtual service again, to enable the service for the application. Remove the ### commments from `apps/base/petclinic/virtualservice.yaml`
+```console
+              namespace: gloo-system
+# ---------------------------------------------------------------------------
+# ---------------- Rate limit config ------------------
+          rateLimitConfigs:
+            refs:
+            - name: global-limit
+              namespace: gloo-system
+#------------------------------------------------------
+# ---------------- Transformation ------------------
+```
 ```sh
-git add -A && git commit -m "add production clone" && git push
+git add -A && git commit -m "staging update" && git push
 ```
+After a few refreshes of the application in the browser we see rate limiting being applied. As seen in the developer view, HTTP code 429 "Too Many Requests"
+![RateLimited](./images/ratelimit.png)
 
-Tell Flux to deploy the production workloads on the `production-clone` cluster:
+- **Add a Transformation**
+Lets use the API Gateway to transform the 429 response body. We update apps/base/petclinic/virtualservice.yaml. Remove the #### commments from `apps/base/petclinic/virtualservice.yaml`
 
+```yaml
+              namespace: gloo-system
+#------------------------------------------------------
+# ---------------- Transformation ------------------
+          transformations:
+            responseTransformation:
+              transformationTemplate:
+                parseBodyBehavior: DontParse
+                body:    
+                  text: '{% if header(":status") == "429" %}<html><body style="background-color:powderblue;"><h1>Too many Requests!</h1><p>Try again after 1 minute</p></body></html>{% else %}{{ body() }}{% endif %}'
+#---------------------------------------------------
+        routeAction:
+```
 ```sh
-flux reconcile kustomization flux-system \
-    --context=production-clone \
-    --with-source 
+git add -A && git commit -m "staging update" && git push
 ```
+Once reconciled we now get a more user friendly rate limiting message.
+![Transform](./images/transform.png)
 
-## Testing
+That is it. Eventually the completed virtual service `apps/base/petclinic/virtualservice.yaml` should look like this.
 
-Any change to the Kubernetes manifests or to the repository structure should be validated in CI before
-a pull requests is merged into the main branch and synced on the cluster.
-
-This repository contains the following GitHub CI workflows:
-
-* the [test](./.github/workflows/test.yaml) workflow validates the Kubernetes manifests and Kustomize overlays with kubeval
-* the [e2e](./.github/workflows/e2e.yaml) workflow starts a Kubernetes cluster in CI and tests the staging setup by running Flux in Kubernetes Kind
+```yaml
+  namespace: gloo-system
+spec:
+# ---------------- SSL config ---------------------------
+  sslConfig:
+    secretRef:
+      name: upstream-tls
+      namespace: gloo-system
+# -------------------------------------------------------
+  virtualHost:
+    domains:
+      - '*'
+    routes:
+      - matchers:
+         - prefix: /
+# ------------------- OIDC - Only applied to this matcher -------------------
+        options:
+          extauth:
+            configRef:
+              name: oauth
+              namespace: gloo-system
+# ---------------------------------------------------------------------------
+# ---------------- Rate limit config ------------------
+          rateLimitConfigs:
+            refs:
+            - name: global-limit
+              namespace: gloo-system
+#------------------------------------------------------
+# ---------------- Transformation ------------------
+          transformations:
+           responseTransformation:
+              transformationTemplate:
+                parseBodyBehavior: DontParse
+                body:
+                  text: '{% if header(":status") == "429" %}<html><body style="background-color:powderblue;"><h1>Too many Requests!</h1><p>Try again after 1 minute</p></body></html>{% else %}{{ body() }}{% endif %}'
+#---------------------------------------------------
+        routeAction:
+          single:
+```
+As you clone the cluster from here, you wont have to go through the staged configuration of the application's API Gateway capabilities. We did that here to illustrate GitOps based configuration of the API Gateway. Simple `flux bootstrap` with the new cluster context and everything will be provisoned to this state on the new cluster. You will have to run the setup script to configure Keycloak.
