@@ -18,11 +18,11 @@ spec:
       - matchers:
          - prefix: /
 # ------------------- OIDC - Only applied to this matcher -------------------
-##        options:
-##          extauth:
-##            configRef:
-##              name: oauth
-##              namespace: gloo-system
+        options:
+          extauth:
+            configRef:
+              name: oauth
+              namespace: gloo-system
 # ---------------------------------------------------------------------------
 # ---------------- Rate limit config ------------------
 ###          rateLimitConfigs:
