@@ -1,4 +1,4 @@
-# flux2-kustomize-helm-example
+# Fluxcd and Gloo Edge
 
 [![test](https://github.com/fluxcd/flux2-kustomize-helm-example/workflows/test/badge.svg)](https://github.com/fluxcd/flux2-kustomize-helm-example/actions)
 [![e2e](https://github.com/fluxcd/flux2-kustomize-helm-example/workflows/e2e/badge.svg)](https://github.com/fluxcd/flux2-kustomize-helm-example/actions)
@@ -13,6 +13,8 @@ Flux will monitor the Helm repository, and it will automatically
 upgrade the Helm releases to their latest chart version based on semver ranges.
 
 ## Prerequisites
+
+Request a Gloo Edge Enterprise [trial license](https://lp.solo.io/request-trial). This is required to enable the enterprise features of the API Gateway, e.g. Authentication, Rate Limiting, Transformation, etc.
 
 You will need a Kubernetes cluster version 1.16 or newer and kubectl version 1.18.
 For a quick local test, you can use [Kubernetes kind](https://kind.sigs.k8s.io/docs/user/quick-start/).
@@ -65,82 +67,10 @@ The apps configuration is structured into:
 ```
 ./apps/
 ├── base
-│   └── podinfo
-│       ├── kustomization.yaml
-│       ├── namespace.yaml
-│       └── release.yaml
 ├── production
 │   ├── kustomization.yaml
-│   └── podinfo-patch.yaml
 └── staging
     ├── kustomization.yaml
-    └── podinfo-patch.yaml
-```
-
-In **apps/base/podinfo/** dir we have a HelmRelease with common values for both clusters:
-
-```yaml
-apiVersion: helm.toolkit.fluxcd.io/v2beta1
-kind: HelmRelease
-metadata:
-  name: podinfo
-  namespace: podinfo
-spec:
-  releaseName: podinfo
-  chart:
-    spec:
-      chart: podinfo
-      sourceRef:
-        kind: HelmRepository
-        name: podinfo
-        namespace: flux-system
-  interval: 5m
-  values:
-    cache: redis-master.redis:6379
-    ingress:
-      enabled: true
-      annotations:
-        kubernetes.io/ingress.class: nginx
-```
-
-In **apps/staging/** dir we have a Kustomize patch with the staging specific values:
-
-```yaml
-apiVersion: helm.toolkit.fluxcd.io/v2beta1
-kind: HelmRelease
-metadata:
-  name: podinfo
-spec:
-  chart:
-    spec:
-      version: ">=1.0.0-alpha"
-  test:
-    enable: true
-  values:
-    ingress:
-      hosts:
-        - host: podinfo.staging
-```
-
-Note that with ` version: ">=1.0.0-alpha"` we configure Flux to automatically upgrade
-the `HelmRelease` to the latest chart version including alpha, beta and pre-releases.
-
-In **apps/production/** dir we have a Kustomize patch with the production specific values:
-
-```yaml
-apiVersion: helm.toolkit.fluxcd.io/v2beta1
-kind: HelmRelease
-metadata:
-  name: podinfo
-  namespace: podinfo
-spec:
-  chart:
-    spec:
-      version: ">=1.0.0"
-  values:
-    ingress:
-      hosts:
-        - host: podinfo.production
 ```
 
 Note that with ` version: ">=1.0.0"` we configure Flux to automatically upgrade
@@ -150,44 +80,37 @@ Infrastructure:
 
 ```
 ./infrastructure/
-├── nginx
+│   ├── glooedge
+│   │   ├── kustomization.yaml
+│   │   ├── namespace.yaml
+│   │   └── release.yaml
+│   ├── keycloak
+│   │   ├── deployment.yaml
+│   │   ├── keycloak.yaml
+│   │   ├── kustomization.yaml
+│   │   ├── namespace.yaml
+│   │   └── service.yaml
 │   ├── kustomization.yaml
-│   ├── namespace.yaml
-│   └── release.yaml
-├── redis
-│   ├── kustomization.yaml
-│   ├── namespace.yaml
-│   └── release.yaml
-└── sources
-    ├── bitnami.yaml
-    ├── kustomization.yaml
-    └── podinfo.yaml
+ └── sources
+     ├── glooedge.yaml
+     └── kustomization.yaml
 ```
 
-In **infrastructure/sources/** dir we have the Helm repositories definitions:
+In **infrastructure/sources/** dir we have the Gloo Edge Enterprise Helm repositories definitions:
 
 ```yaml
 apiVersion: source.toolkit.fluxcd.io/v1beta1
 kind: HelmRepository
 metadata:
-  name: podinfo
-spec:
-  interval: 5m
-  url: https://stefanprodan.github.io/podinfo
----
-apiVersion: source.toolkit.fluxcd.io/v1beta1
-kind: HelmRepository
-metadata:
-  name: bitnami
+  name: glooedge
 spec:
   interval: 30m
-  url: https://charts.bitnami.com/bitnami
+  url: https://storage.googleapis.com/gloo-public-helm
 ```
 
-Note that with ` interval: 5m` we configure Flux to pull the Helm repository index every five minutes.
-If the index contains a new chart version that matches a `HelmRelease` semver range, Flux will upgrade the release.
+Note that with ` interval: 30m` we configure Flux to pull the Helm repository index every 30 minutes.
 
-## Bootstrap staging and production
+## Bootstrap staging environment (cluster)
 
 The clusters dir contains the Flux configuration:
 
@@ -231,6 +154,14 @@ spec:
     kind: GitRepository
     name: flux-system
   path: ./infrastructure
+  prune: true
+  validation: client
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: gloo
+      namespace: gloo-system
+  timeout: 10m
 ```
 
 Note that with `path: ./apps/staging` we configure Flux to sync the staging Kustomize overlay and 
@@ -250,13 +181,29 @@ Verify that your staging cluster satisfies the prerequisites with:
 flux check --pre
 ```
 
-Set the kubectl context to your staging cluster and bootstrap Flux:
+Update infrastructure/glooedge/release.yaml license_key with your trial license:
+
+```yaml
+  install:
+    remediation:
+      retries: 5 
+  values:
+    license_key: "eyJl.........."
+    gloo:
+      gloo:
+        deployment:
+          image:
+            tag: 1.8.6
+```
+
+Set the kubectl context to your staging cluster (in this case it's a local `microk8s`) and bootstrap Flux:
 
 ```sh
 flux bootstrap github \
-    --context=staging \
+    --context=microk8s \
     --owner=${GITHUB_USER} \
     --repository=${GITHUB_REPO} \
+    --token-auth \
     --branch=main \
     --personal \
     --path=clusters/staging
@@ -265,185 +212,118 @@ flux bootstrap github \
 The bootstrap command commits the manifests for the Flux components in `clusters/staging/flux-system` dir
 and creates a deploy key with read-only access on GitHub, so it can pull changes inside the cluster.
 
-Watch for the Helm releases being install on staging:
+Wait for the Gloo Edge, Keycloak and Petclinic application installations to complete on staging:
 
 ```console
-$ watch flux get helmreleases --all-namespaces 
-NAMESPACE	NAME   	REVISION	SUSPENDED	READY	MESSAGE                          
-nginx    	nginx  	5.6.14  	False    	True 	release reconciliation succeeded	
-podinfo  	podinfo	5.0.3   	False    	True 	release reconciliation succeeded	
-redis    	redis  	11.3.4  	False    	True 	release reconciliation succeeded
+kubectl get po -n flux-system
+NAME                                       READY   STATUS    RESTARTS   AGE
+helm-controller-7b58d45956-c6dl9           1/1     Running   0          18m
+notification-controller-5f4f4967b9-9v5pw   1/1     Running   0          18m
+kustomize-controller-bb6c99658-8pf9k       1/1     Running   0          18m
+source-controller-6448c7989-wwgn6          1/1     Running   0          18m
+
+kubectl get po -n gloo-system
+NAME                                                  READY   STATUS    RESTARTS   AGE
+redis-d7786cb9d-tqtbp                                 1/1     Running   0          8m23s
+gloo-58cf777ffb-n86qp                                 1/1     Running   0          8m23s
+gateway-proxy-659c5cdc96-8rvl8                        1/1     Running   0          8m22s
+discovery-89cc57dbd-rqp6k                             1/1     Running   0          8m23s
+observability-6894c76ddb-qgtwg                        1/1     Running   0          8m22s
+gloo-fed-7b9ff9c44-m7x46                              1/1     Running   0          8m22s
+glooe-prometheus-kube-state-metrics-85c5fcb4c-xp7qb   1/1     Running   0          8m23s
+gateway-7dbd774b84-xjdrk                              1/1     Running   0          8m23s
+glooe-grafana-75dfc55d4d-tgtrb                        1/1     Running   0          8m23s
+extauth-6489bc55f9-6mldc                              1/1     Running   0          8m22s
+gloo-fed-console-65859578c7-wqtxz                     3/3     Running   0          8m22s
+glooe-prometheus-server-d99d4477b-8vcr9               2/2     Running   0          8m22s
+rate-limit-5dfb7b4cbb-b47cm                           1/1     Running   1          8m22s
+
+kubectl get po -n default
+NAME                       READY   STATUS    RESTARTS   AGE
+keycloak-d68dbc7fb-psn99   1/1     Running   0          16m
+petclinic-0                1/1     Running   0          12m
+petclinic-db-0             1/1     Running   0          12m
+
 ```
 
-Verify that the demo app can be accessed via ingress:
+Verify Gloo Edge proxy service `EXTERNAL-IP` can be accessed, in this case `192.168.64.51`:
 
 ```console
-$ kubectl -n nginx port-forward svc/nginx-ingress-controller 8080:80 &
-
-$ curl -H "Host: podinfo.staging" http://localhost:8080
-{
-  "hostname": "podinfo-59489db7b5-lmwpn",
-  "version": "5.0.3"
-}
+kubectl -n gloo-system get service/gateway-proxy
+NAME            TYPE           CLUSTER-IP      EXTERNAL-IP     PORT(S)                      AGE
+gateway-proxy   LoadBalancer   10.152.183.20   192.168.64.51   80:31344/TCP,443:32573/TCP   11m
 ```
 
-Bootstrap Flux on production by setting the context and path to your production cluster:
+Clone your personal forked repo locally and cd into the folder. We will now finalise the configuration and start to add TLS encryption, Authentication, Rate Limiting and Transformation capabilties to the Petclinic application via Git commits.
+
+First finalise Keycloak (OIDC) configurtaion by running `./scripts/setup.sh`
+We'll use the `APP_URL`, `KEYCLOAK_URL` & `client` outputs to configure the AuthConfig later.
+
+Now all we need to do is commit the change to Github and wait for Fluxcd to reconsile the change.
 
 ```sh
-flux bootstrap github \
-    --context=production \
-    --owner=${GITHUB_USER} \
-    --repository=${GITHUB_REPO} \
-    --branch=main \
-    --personal \
-    --path=clusters/production
+git add -A && git commit -m "staging update" && git push
 ```
 
-Watch the production reconciliation:
+You will now have to use HTTPS (https://192.168.64.51/) to access Petclinic. It's a self signed certificate, so accept the certificate warnings in your browser.
+![Cert Warn](./images/cert-warn.png)
+
+- **Add Authentication**
+The setup script configured Keycloak with users, but we need to update `apps/staging/petclinic/authconfig.yaml` for your environment. Then we'll update `apps/staging/petclinic/kustomization.yaml` to apply the configuration.
+
+Find `APP_URL`, `KEYCLOAK_URL` & `client` from the `setup.sh` output.
 
 ```console
-$ watch flux get kustomizations
-NAME          	REVISION                                        READY
-apps          	main/797cd90cc8e81feb30cfe471a5186b86daf2758d	True
-flux-system   	main/797cd90cc8e81feb30cfe471a5186b86daf2758d	True
-infrastructure	main/797cd90cc8e81feb30cfe471a5186b86daf2758d	True
+### Petclinic URL for AuthConfig ###
+APP_URL: https://192.168.64.51
+### Keycloak endpoint for AuthConfig ###
+KEYCLOAK_URL: http://192.168.64.50:8080/auth
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100  1803  100  1734  100    69   3000    119 --:--:-- --:--:-- --:--:--  3119
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   571  100   542  100    29   4839    258 --:--:-- --:--:-- --:--:--  5053
+### Keycloak Client ID for AuthConfig ###
+client: 5b6b138b-1e1d-44ea-82e2-081f1d4de695
 ```
-
-## Encrypt Kubernetes secrets
-
-In order to store secrets safely in a Git repository,
-you can use Mozilla's SOPS CLI to encrypt Kubernetes secrets with OpenPGP or KMS.
-
-Install [gnupg](https://www.gnupg.org/) and [sops](https://github.com/mozilla/sops):
-
-```sh
-brew install gnupg sops
-```
-
-Generate a GPG key for Flux without specifying a passphrase and retrieve the GPG key ID:
+In this example `apps/staging/petclinic/authconfig.yaml` needs to be updated as follows:
 
 ```console
-$ gpg --full-generate-key
-Email address: fluxcdbot@users.noreply.github.com
-
-$ gpg --list-secret-keys fluxcdbot@users.noreply.github.com
-sec   rsa3072 2020-09-06 [SC]
-      1F3D1CED2F865F5E59CA564553241F147E7C5FA4
-```
-
-Create a Kubernetes secret on your clusters with the private key:
-
-```sh
-gpg --export-secret-keys \
---armor 1F3D1CED2F865F5E59CA564553241F147E7C5FA4 |
-kubectl create secret generic sops-gpg \
---namespace=flux-system \
---from-file=sops.asc=/dev/stdin
-```
-
-Generate a Kubernetes secret manifest and encrypt the secret's data field with sops:
-
-```sh
-kubectl -n redis create secret generic redis-auth \
---from-literal=password=change-me \
---dry-run=client \
--o yaml > infrastructure/redis/redis-auth.yaml
-
-sops --encrypt \
---pgp=1F3D1CED2F865F5E59CA564553241F147E7C5FA4 \
---encrypted-regex '^(data|stringData)$' \
---in-place infrastructure/redis/redis-auth.yaml
-```
-
-Add the secret to `infrastructure/redis/kustomization.yaml`:
-
-```yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-namespace: redis
-resources:
-  - namespace.yaml
-  - release.yaml
-  - redis-auth.yaml
-```
-
-Enable decryption on your clusters by editing the `infrastructure.yaml` files:
-
-```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
-kind: Kustomization
+apiVersion: enterprise.gloo.solo.io/v1
+kind: AuthConfig
 metadata:
-  name: infrastructure
-  namespace: flux-system
+  name: oauth
+  namespace: gloo-system
 spec:
-  # content omitted for brevity
-  decryption:
-    provider: sops
-    secretRef:
-      name: sops-gpg
+  configs:
+  - oauth2:
+      oidcAuthorizationCode:
+        appUrl: https://192.168.64.51
+        callbackPath: /callback
+        clientId: 5b6b138b-1e1d-44ea-82e2-081f1d4de695
+        clientSecretRef:
+          name: oauth
+          namespace: gloo-system
+        issuerUrl: "http://192.168.64.50:8080/auth/realms/master/"
+        scopes:
+        - email
+        headers:
+          idTokenHeader: jwt
 ```
-
-Export the public key so anyone with access to the repository can encrypt secrets but not decrypt them:
-
-```sh
-gpg --export -a fluxcdbot@users.noreply.github.com > public.key
-```
-
-Push the changes to the main branch:
-
-```sh
-git add -A && git commit -m "add encrypted secret" && git push
-```
-
-Verify that the secret has been created in the `redis` namespace on both clusters:
-
-```sh
-kubectl --context staging -n redis get secrets
-kubectl --context production -n redis get secrets
-```
-
-You can use Kubernetes secrets to provide values for your Helm releases:
-
-```yaml
-apiVersion: helm.toolkit.fluxcd.io/v2beta1
-kind: HelmRelease
-metadata:
-  name: redis
-spec:
-  # content omitted for brevity
-  values:
-    usePassword: true
-  valuesFrom:
-  - kind: Secret
-    name: redis-auth
-    valuesKey: password
-    targetPath: password
-```
-
-Find out more about Helm releases values overrides in the
-[docs](https://toolkit.fluxcd.io/components/helm/helmreleases/#values-overrides).
-
-
-## Add clusters
-
-If you want to add a cluster to your fleet, first clone your repo locally:
-
-```sh
-git clone https://github.com/${GITHUB_USER}/${GITHUB_REPO}.git
-cd ${GITHUB_REPO}
-```
+And then update `apps/staging/petclinic/kustomization.yaml` by removing the comment in front of authconfig.yaml
 
 Create a dir inside `clusters` with your cluster name:
 
 ```sh
 mkdir -p clusters/dev
 ```
+Lastly we update the application virtual service to use the OIDC service. Remove the ## commments from `apps/base/petclinic/virtualservice.yaml`
 
 Copy the sync manifests from staging:
 
 ```sh
 cp clusters/staging/infrastructure.yaml clusters/dev
-cp clusters/staging/apps.yaml clusters/dev
 ```
 
 You could create a dev overlay inside `apps`, make sure
@@ -498,7 +378,6 @@ kind: Kustomization
 resources:
   - flux-system
   - ../production/infrastructure.yaml
-  - ../production/apps.yaml
 ```
 
 Note that besides the `flux-system` kustomize overlay, we also include

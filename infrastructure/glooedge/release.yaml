@@ -1,0 +1,21 @@
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  name: glooedge
+  namespace: gloo-system
+spec:
+  releaseName: gloo
+  chart:
+    spec:
+      chart: gloo
+      sourceRef:
+        kind: HelmRepository
+        name: glooedge
+        namespace: flux-system
+  interval: 1h0m0s
+  install:
+    remediation:
+      retries: 5 
+  values:
+    #license_key: "eyJleHAiOjE2ODM1OTM2ODIsImlhdCI6MTYzMTc1MzY4MiwiayI6IkNLRnI4USIsImx0IjoiZW50IiwicHJvZHVjdCI6Imdsb28ifQ.hqxC313LMDyAMYEMFbgYQlSlpMwMAVR_YBLcFTfHKA4"
+    license_key: "eyJleHAiOjE2MzY2ODU5ODksImlhdCI6MTYzNjU5OTU4OSwiayI6IjZ3NWxDUSIsImx0IjoidHJpYWwiLCJwcm9kdWN0IjoiZ2xvbyJ9.zo3nwzpMkQZneZ-Itq8EksKr3zxYg9mrcXPjrIJjdqQ"

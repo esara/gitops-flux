@@ -1,0 +1,7 @@
+apiVersion: source.toolkit.fluxcd.io/v1beta1
+kind: HelmRepository
+metadata:
+  name: glooedge
+spec:
+  interval: 30m
+  url: https://storage.googleapis.com/solo-public-helm
